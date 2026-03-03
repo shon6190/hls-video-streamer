@@ -59,6 +59,11 @@ class HLS_Processor
 
         $job_id = basename($tmp_file_path);
 
+        // Attempt to give the script more execution time
+        if (function_exists('set_time_limit')) {
+            set_time_limit(0);
+        }
+
         // Ensure the source file still exists
         if (!file_exists($tmp_file_path)) {
             error_log('HLS Converter: Temp file ' . $tmp_file_path . ' does not exist.');
@@ -99,11 +104,42 @@ class HLS_Processor
         // If ABR is strictly required, we can expand it here, but a single stream (e.g., 720p 2M bitrate) is generally what most simple "HLS conversions" mean in basic plugins.
 
         // The command below takes the input MP4, encodes video with H.264, audio with AAC, segments it into 10s chunks.
+        // Define a progress log file specifically for this job
+        $progress_file = trailingslashit($upload_dir['basedir']) . HLS_TMP_DIR_NAME . '/' . $job_id . '_progress.txt';
+
+        // Add to ffmpeg command to output progress file
         $ffmpeg_cmd = sprintf(
-            'C:\\ffmpeg\\bin\\ffmpeg.exe -i %s -profile:v baseline -level 3.0 -s 1280x720 -start_number 0 -hls_time 10 -hls_list_size 0 -f hls %s 2>&1',
+            'C:\\ffmpeg\\bin\\ffmpeg.exe -y -i %s -profile:v baseline -level 3.0 -s 1280x720 -start_number 0 -hls_time 10 -hls_list_size 0 -progress %s -f hls %s 2>&1',
             escapeshellarg($tmp_file_path),
+            escapeshellarg($progress_file),
             escapeshellarg($output_m3u8)
         );
+
+        // Before starting, attempt to figure out video's total duration for progress parsing
+        $duration_cmd = sprintf('C:\\ffmpeg\\bin\\ffmpeg.exe -i %s 2>&1', escapeshellarg($tmp_file_path));
+        $duration_output = array();
+        exec($duration_cmd, $duration_output);
+        $total_duration_us = 0; // Total duration in microseconds as outputted by FFmpeg
+        foreach ($duration_output as $line) {
+            if (preg_match('/Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})/', $line, $matches)) {
+                $hours = intval($matches[1]);
+                $mins = intval($matches[2]);
+                $secs = intval($matches[3]);
+                $frac = intval($matches[4]); // Hundredths of a second
+
+                $total_seconds = ($hours * 3600) + ($mins * 60) + $secs;
+                $total_duration_us = ($total_seconds * 1000000) + ($frac * 10000);
+                break;
+            }
+        }
+
+        // Save total duration and progress file path temporarily in job details
+        $jobs = get_option('hls_conversion_jobs', array());
+        if (isset($jobs[$job_id])) {
+            $jobs[$job_id]['total_duration_us'] = $total_duration_us;
+            $jobs[$job_id]['progress_file'] = $progress_file;
+            update_option('hls_conversion_jobs', $jobs);
+        }
 
         // Execute the command
         $output = array();
@@ -119,9 +155,12 @@ class HLS_Processor
             $this->update_job_status($job_id, 'completed');
         }
 
-        // Clean up the temporary MP4 file
+        // Clean up the temporary MP4 file and progress log
         if (file_exists($tmp_file_path)) {
             unlink($tmp_file_path);
+        }
+        if (isset($progress_file) && file_exists($progress_file)) {
+            unlink($progress_file);
         }
     }
 }

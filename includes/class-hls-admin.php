@@ -11,6 +11,8 @@ class HLS_Admin
     {
         add_action('admin_menu', array($this, 'add_menu_page'));
         add_action('admin_init', array($this, 'process_form_submission'));
+        add_action('wp_ajax_hls_get_status', array($this, 'ajax_get_status'));
+        add_action('wp_ajax_hls_delete_video', array($this, 'ajax_delete_video'));
     }
 
     public function add_menu_page()
@@ -86,22 +88,24 @@ class HLS_Admin
 
             <?php
             $jobs = get_option('hls_conversion_jobs', array());
-            if (!empty($jobs)) {
-                ?>
-                <h2>Active Status & History</h2>
-                <table class="widefat fixed striped" style="margin-bottom: 20px; border-left: 4px solid #2271b1;">
-                    <thead>
-                        <tr>
-                            <th>Original File</th>
-                            <th>Status</th>
-                            <th>Details</th>
-                        </tr>
-                    </thead>
-                    <tbody>
+            ?>
+            <h2 id="hls-active-heading">Active Status & History</h2>
+            <table class="widefat fixed striped" id="hls-active-table"
+                style="margin-bottom: 20px; border-left: 4px solid #2271b1;">
+                <thead>
+                    <tr>
+                        <th>Original File</th>
+                        <th>Status</th>
+                        <th>Details</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="hls-active-jobs">
+                    <?php if (!empty($jobs)): ?>
                         <?php foreach ($jobs as $job_id => $job): ?>
-                            <tr>
+                            <tr id="job-row-<?php echo esc_attr($job_id); ?>">
                                 <td><strong><?php echo esc_html($job['filename']); ?></strong></td>
-                                <td>
+                                <td class="job-status">
                                     <?php if ($job['status'] === 'processing'): ?>
                                         <span style="color: #2271b1; font-weight: bold;"><span class="dashicons dashicons-update"
                                                 style="animation: rotation 2s infinite linear;"></span> Processing (WP-Cron)</span>
@@ -110,35 +114,41 @@ class HLS_Admin
                                             Failed</span>
                                     <?php endif; ?>
                                 </td>
-                                <td>
+                                <td class="job-details">
                                     <?php if ($job['status'] === 'failed'): ?>
                                         <p style="color: #d63638;"><?php echo esc_html($job['error']); ?></p>
-                                        <a href="<?php echo esc_url(admin_url('admin.php?page=hls-converter&dismiss_job=' . urlencode($job_id))); ?>"
-                                            class="button button-small">Dismiss Error & Clear Temp File</a>
                                     <?php else: ?>
                                         <p><em>Check back soon. Task might take several minutes depending on file size and server
                                                 configuration.</em></p>
                                     <?php endif; ?>
                                 </td>
+                                <td class="job-action">
+                                    <?php if ($job['status'] === 'failed'): ?>
+                                        <a href="<?php echo esc_url(admin_url('admin.php?page=hls-converter&dismiss_job=' . urlencode($job_id))); ?>"
+                                            class="button button-small">Dismiss Error & Clear Temp File</a>
+                                    <?php endif; ?>
+                                </td>
                             </tr>
                         <?php endforeach; ?>
-                    </tbody>
-                </table>
-                <style>
-                    @keyframes rotation {
-                        from {
-                            transform: rotate(0deg);
-                        }
-
-                        to {
-                            transform: rotate(359deg);
-                        }
+                    <?php else: ?>
+                        <tr>
+                            <td colspan="4">No active or failed jobs.</td>
+                        </tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+            <style>
+                @keyframes rotation {
+                    from {
+                        transform: rotate(0deg);
                     }
-                </style>
-                <hr>
-                <?php
-            }
-            ?>
+
+                    to {
+                        transform: rotate(359deg);
+                    }
+                }
+            </style>
+            <hr>
 
             <h2>Previously Converted Videos</h2>
             <p>Once converted, use the shortcode inside your posts/pages, or extract the URL to use in sliders.</p>
@@ -148,9 +158,10 @@ class HLS_Admin
                         <th>Video Name</th>
                         <th>Shortcode</th>
                         <th>HLS Stream URL (.m3u8)</th>
+                        <th>Action</th>
                     </tr>
                 </thead>
-                <tbody>
+                <tbody id="hls-completed-jobs">
                     <?php
                     $upload_dir = wp_upload_dir();
                     $hls_dir = trailingslashit($upload_dir['basedir']) . HLS_UPLOAD_DIR_NAME;
@@ -172,6 +183,7 @@ class HLS_Admin
                                     <td><code>[hls_player url="<?php echo esc_url($stream_url); ?>"]</code></td>
                                     <td><input type="text" readonly class="large-text" value="<?php echo esc_url($stream_url); ?>"
                                             onclick="this.select();"></td>
+                                    <td><button type="button" class="button hls-delete-video" data-folder="<?php echo esc_attr($folder); ?>">Delete</button></td>
                                 </tr>
                                 <?php
                             }
@@ -183,7 +195,190 @@ class HLS_Admin
                 </tbody>
             </table>
         </div>
+        </div>
+
+        <script>
+            jQuery(document).ready(function ($) {
+                function hlsPolling() {
+                    $.post(ajaxurl, {
+                        action: 'hls_get_status',
+                        hls_nonce: '<?php echo wp_create_nonce('hls_status_nonce'); ?>'
+                    }, function (response) {
+                        if (response.success) {
+
+                            // Update active jobs table
+                            var activeJobsHtml = '';
+                            if (response.data.active_jobs && Object.keys(response.data.active_jobs).length > 0) {
+                                $.each(response.data.active_jobs, function (job_id, job) {
+                                    activeJobsHtml += '<tr id="job-row-' + job_id + '">';
+                                    activeJobsHtml += '<td><strong>' + job.filename + '</strong></td>';
+                                    activeJobsHtml += '<td class="job-status">';
+                                    if (job.status === 'processing') {
+                                        var progressText = 'Processing (WP-Cron)';
+                                        if (job.progress !== undefined) {
+                                            var pct = Math.min(100, Math.max(0, job.progress));
+                                            progressText = '<div style="margin-top:5px;width:100%;background-color:#f0f0f1;height:10px;border-radius:5px;"><div style="background-color:#2271b1;height:10px;border-radius:5px;width:' + pct + '%;"></div></div><small>' + pct + '% Complete</small>';
+                                        }
+                                        activeJobsHtml += '<span style="color: #2271b1; font-weight: bold;"><span class="dashicons dashicons-update" style="animation: rotation 2s infinite linear;"></span> Processing (WP-Cron)</span>' + progressText;
+                                    } else {
+                                        activeJobsHtml += '<span style="color: #d63638; font-weight: bold;"><span class="dashicons dashicons-warning"></span> Failed</span>';
+                                    }
+                                    activeJobsHtml += '</td>';
+                                    activeJobsHtml += '<td class="job-details">';
+                                    if (job.status === 'failed') {
+                                        activeJobsHtml += '<p style="color: #d63638;">' + job.error + '</p>';
+                                    } else {
+                                        activeJobsHtml += '<p><em>Check back soon. Task might take several minutes depending on file size and server configuration.</em></p>';
+                                    }
+                                    activeJobsHtml += '</td>';
+                                    activeJobsHtml += '<td class="job-action">';
+                                    if (job.status === 'failed') {
+                                        activeJobsHtml += '<a href="?page=hls-converter&dismiss_job=' + encodeURIComponent(job_id) + '" class="button button-small">Dismiss Error & Clear Temp File</a>';
+                                    }
+                                    activeJobsHtml += '</td>';
+                                    activeJobsHtml += '</tr>';
+                                });
+                            } else {
+                                activeJobsHtml = '<tr><td colspan="4">No active or failed jobs.</td></tr>';
+                            }
+                            $('#hls-active-jobs').html(activeJobsHtml);
+
+                            // Update completed jobs table
+                            var completedJobsHtml = '';
+                            if (response.data.completed_jobs && response.data.completed_jobs.length > 0) {
+                                $.each(response.data.completed_jobs, function (i, job) {
+                                    completedJobsHtml += '<tr>';
+                                    completedJobsHtml += '<td><strong>' + job.folder + '</strong></td>';
+                                    completedJobsHtml += '<td><code>[hls_player url="' + job.stream_url + '"]</code></td>';
+                                    completedJobsHtml += '<td><input type="text" readonly class="large-text" value="' + job.stream_url + '" onclick="this.select();"></td>';
+                                    completedJobsHtml += '<td><button type="button" class="button hls-delete-video" data-folder="' + job.folder + '">Delete</button></td>';
+                                    completedJobsHtml += '</tr>';
+                                });
+                            } else {
+                                completedJobsHtml = '<tr><td colspan="4">No videos found.</td></tr>';
+                            }
+                            $('#hls-completed-jobs').html(completedJobsHtml);
+
+                        }
+                    });
+                }
+
+                // Poll every 5 seconds
+                setInterval(hlsPolling, 5000);
+
+                // Handle Delete button click
+                $(document).on('click', '.hls-delete-video', function() {
+                    var button = $(this);
+                    var folder = button.data('folder');
+
+                    if (confirm('Are you sure you want to delete the video "' + folder + '"? This will remove all generated files.')) {
+                        button.prop('disabled', true).text('Deleting...');
+
+                        $.post(ajaxurl, {
+                            action: 'hls_delete_video',
+                            folder: folder,
+                            hls_nonce: '<?php echo wp_create_nonce('hls_status_nonce'); ?>'
+                        }, function (response) {
+                            if (response.success) {
+                                button.closest('tr').fadeOut(300, function() {
+                                    $(this).remove();
+                                });
+                            } else {
+                                alert('Error deleting video: ' + (response.data || 'Unknown error'));
+                                button.prop('disabled', false).text('Delete');
+                            }
+                        });
+                    }
+                });
+            });
+        </script>
         <?php
+    }
+
+    public function ajax_get_status()
+    {
+        check_ajax_referer('hls_status_nonce', 'hls_nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized request.');
+        }
+
+        $jobs = get_option('hls_conversion_jobs', array());
+
+        // Parse progress if possible
+        foreach ($jobs as $job_id => &$job) {
+            if ($job['status'] === 'processing' && !empty($job['progress_file']) && !empty($job['total_duration_us'])) {
+                if (file_exists($job['progress_file'])) {
+                    $progress_content = file_get_contents($job['progress_file']);
+                    if (preg_match_all('/out_time_us=([\d]+)/', $progress_content, $matches)) {
+                        $last_out_time_us = end($matches[1]);
+                        if (!empty($job['total_duration_us'])) {
+                            $pct = round(($last_out_time_us / $job['total_duration_us']) * 100);
+                            $job['progress'] = $pct;
+                        }
+                    }
+                }
+            }
+        }
+        unset($job);
+
+        $upload_dir = wp_upload_dir();
+        $hls_dir = trailingslashit($upload_dir['basedir']) . HLS_UPLOAD_DIR_NAME;
+
+        $completed_jobs = array();
+
+        if (is_dir($hls_dir)) {
+            $files = scandir($hls_dir);
+            foreach ($files as $folder) {
+                if ($folder === '.' || $folder === '..')
+                    continue;
+
+                $stream_path = trailingslashit($hls_dir) . $folder . '/stream.m3u8';
+                if (file_exists($stream_path)) {
+                    $stream_url = trailingslashit($upload_dir['baseurl']) . HLS_UPLOAD_DIR_NAME . '/' . $folder . '/stream.m3u8';
+                    $completed_jobs[] = array(
+                        'folder' => esc_html($folder),
+                        'stream_url' => esc_url($stream_url)
+                    );
+                }
+            }
+        }
+
+        wp_send_json_success(array(
+            'active_jobs' => $jobs,
+            'completed_jobs' => $completed_jobs
+        ));
+    }
+
+    public function ajax_delete_video()
+    {
+        check_ajax_referer('hls_status_nonce', 'hls_nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized request.');
+        }
+
+        $folder = isset($_POST['folder']) ? sanitize_text_field($_POST['folder']) : '';
+
+        if (empty($folder) || strpos($folder, '..') !== false || strpos($folder, '/') !== false || strpos($folder, '\\') !== false) {
+             wp_send_json_error('Invalid folder name.');
+        }
+
+        $upload_dir = wp_upload_dir();
+        $hls_dir = trailingslashit($upload_dir['basedir']) . HLS_UPLOAD_DIR_NAME . '/' . $folder;
+
+        if (is_dir($hls_dir)) {
+            // Delete all files in the directory
+            $files = array_diff(scandir($hls_dir), array('.','..'));
+            foreach ($files as $file) {
+                unlink(trailingslashit($hls_dir) . $file);
+            }
+            // Delete the directory itself
+            rmdir($hls_dir);
+            wp_send_json_success('Deleted.');
+        } else {
+            wp_send_json_error('Directory not found.');
+        }
     }
 
     public function process_form_submission()
