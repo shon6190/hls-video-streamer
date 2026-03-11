@@ -59,6 +59,10 @@ class HLS_Admin
                 }
             }
 
+            if (isset($_GET['settings']) && $_GET['settings'] == 'saved') {
+                echo '<div class="notice notice-success is-dismissible"><p>Settings saved successfully.</p></div>';
+            }
+
             if (isset($_GET['upload']) && $_GET['upload'] == 'success') {
                 echo '<div class="notice notice-success is-dismissible"><p>Video uploaded successfully! The conversion process has been scheduled in the background.</p></div>';
             }
@@ -70,6 +74,29 @@ class HLS_Admin
             }
             ?>
 
+            <h2>Settings</h2>
+            <form method="post" action="">
+                <?php wp_nonce_field('hls_save_settings_nonce', 'hls_settings_nonce'); ?>
+                <table class="form-table">
+                    <tr>
+                        <th scope="row"><label for="hls_ffmpeg_path">FFmpeg Executable Path</label></th>
+                        <td>
+                            <?php $ffmpeg_path = get_option('hls_ffmpeg_path', 'ffmpeg'); ?>
+                            <input type="text" name="hls_ffmpeg_path" id="hls_ffmpeg_path" class="regular-text"
+                                value="<?php echo esc_attr($ffmpeg_path); ?>" />
+                            <p class="description">Enter the path to the FFmpeg executable on your server (e.g.,
+                                <code>/usr/bin/ffmpeg</code> or <code>C:\ffmpeg\bin\ffmpeg.exe</code>). Leave as
+                                <code>ffmpeg</code> if it's in your system PATH.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+                <?php submit_button('Save Settings'); ?>
+            </form>
+
+            <hr>
+
+            <h2>Upload Video</h2>
             <form method="post" enctype="multipart/form-data" action="">
                 <?php wp_nonce_field('hls_upload_video_nonce', 'hls_nonce'); ?>
                 <table class="form-table">
@@ -183,7 +210,8 @@ class HLS_Admin
                                     <td><code>[hls_player url="<?php echo esc_url($stream_url); ?>"]</code></td>
                                     <td><input type="text" readonly class="large-text" value="<?php echo esc_url($stream_url); ?>"
                                             onclick="this.select();"></td>
-                                    <td><button type="button" class="button hls-delete-video" data-folder="<?php echo esc_attr($folder); ?>">Delete</button></td>
+                                    <td><button type="button" class="button hls-delete-video"
+                                            data-folder="<?php echo esc_attr($folder); ?>">Delete</button></td>
                                 </tr>
                                 <?php
                             }
@@ -267,7 +295,7 @@ class HLS_Admin
                 setInterval(hlsPolling, 5000);
 
                 // Handle Delete button click
-                $(document).on('click', '.hls-delete-video', function() {
+                $(document).on('click', '.hls-delete-video', function () {
                     var button = $(this);
                     var folder = button.data('folder');
 
@@ -280,7 +308,7 @@ class HLS_Admin
                             hls_nonce: '<?php echo wp_create_nonce('hls_status_nonce'); ?>'
                         }, function (response) {
                             if (response.success) {
-                                button.closest('tr').fadeOut(300, function() {
+                                button.closest('tr').fadeOut(300, function () {
                                     $(this).remove();
                                 });
                             } else {
@@ -361,7 +389,7 @@ class HLS_Admin
         $folder = isset($_POST['folder']) ? sanitize_text_field($_POST['folder']) : '';
 
         if (empty($folder) || strpos($folder, '..') !== false || strpos($folder, '/') !== false || strpos($folder, '\\') !== false) {
-             wp_send_json_error('Invalid folder name.');
+            wp_send_json_error('Invalid folder name.');
         }
 
         $upload_dir = wp_upload_dir();
@@ -369,7 +397,7 @@ class HLS_Admin
 
         if (is_dir($hls_dir)) {
             // Delete all files in the directory
-            $files = array_diff(scandir($hls_dir), array('.','..'));
+            $files = array_diff(scandir($hls_dir), array('.', '..'));
             foreach ($files as $file) {
                 unlink(trailingslashit($hls_dir) . $file);
             }
@@ -383,7 +411,20 @@ class HLS_Admin
 
     public function process_form_submission()
     {
-        if (isset($_POST['hls_nonce']) && wp_verify_nonce($_POST['hls_nonce'], 'hls_upload_video_nonce')) {
+        // Handle Settings Save
+        if (isset($_POST['hls_settings_nonce']) && wp_verify_nonce($_POST['hls_settings_nonce'], 'hls_save_settings_nonce')) {
+            if (!current_user_can('manage_options')) {
+                wp_die('Unauthorized request.');
+            }
+
+            if (isset($_POST['hls_ffmpeg_path'])) {
+                update_option('hls_ffmpeg_path', sanitize_text_field(wp_unslash($_POST['hls_ffmpeg_path'])));
+            }
+
+            wp_redirect(admin_url('admin.php?page=hls-converter&settings=saved'));
+            exit;
+            // Handle Video Upload
+        } elseif (isset($_POST['hls_nonce']) && wp_verify_nonce($_POST['hls_nonce'], 'hls_upload_video_nonce')) {
 
             if (!current_user_can('manage_options')) {
                 wp_die('Unauthorized request.');
