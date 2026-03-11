@@ -43,8 +43,9 @@ class HLS_Processor
         $output = array();
         $return_var = -1;
         // On Windows typically just ffmpeg if in PATH. 
-        // We'll execute ffmpeg -version and check the return var.
-        exec('C:\\ffmpeg\\bin\\ffmpeg.exe -version 2>&1', $output, $return_var);
+        // Execute ffmpeg -version and check the return var.
+        $ffmpeg_path = get_option('hls_ffmpeg_path', 'ffmpeg');
+        exec(escapeshellcmd($ffmpeg_path) . ' -version 2>&1', $output, $return_var);
         return ($return_var === 0);
     }
 
@@ -107,16 +108,19 @@ class HLS_Processor
         // Define a progress log file specifically for this job
         $progress_file = trailingslashit($upload_dir['basedir']) . HLS_TMP_DIR_NAME . '/' . $job_id . '_progress.txt';
 
+        $ffmpeg_path = get_option('hls_ffmpeg_path', 'ffmpeg');
+
         // Add to ffmpeg command to output progress file
         $ffmpeg_cmd = sprintf(
-            'C:\\ffmpeg\\bin\\ffmpeg.exe -y -i %s -profile:v baseline -level 3.0 -s 1280x720 -start_number 0 -hls_time 10 -hls_list_size 0 -progress %s -f hls %s 2>&1',
+            '%s -y -i %s -profile:v baseline -level 3.0 -start_number 0 -hls_time 10 -hls_list_size 0 -progress %s -f hls %s 2>&1',
+            escapeshellcmd($ffmpeg_path),
             escapeshellarg($tmp_file_path),
             escapeshellarg($progress_file),
             escapeshellarg($output_m3u8)
         );
 
         // Before starting, attempt to figure out video's total duration for progress parsing
-        $duration_cmd = sprintf('C:\\ffmpeg\\bin\\ffmpeg.exe -i %s 2>&1', escapeshellarg($tmp_file_path));
+        $duration_cmd = sprintf('%s -i %s 2>&1', escapeshellcmd($ffmpeg_path), escapeshellarg($tmp_file_path));
         $duration_output = array();
         exec($duration_cmd, $duration_output);
         $total_duration_us = 0; // Total duration in microseconds as outputted by FFmpeg
